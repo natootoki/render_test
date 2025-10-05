@@ -1,28 +1,56 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="Render FastAPI sample", version="1.0.0")
+app = FastAPI(title="Render WebSocket Chat")
 
-@app.get("/")
-def root():
-    return {"ok": True, "message": "Hello from Render + FastAPI!"}
+# 静的ファイル（index.html）をルートにマウント
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 @app.get("/healthz")
 def healthz():
-    # Render のヘルスチェックに使える軽量エンドポイント
-    return {"status": "healthy"}
+    return JSONResponse({"status": "ok"})
 
-class EchoIn(BaseModel):
-    text: str
+class ConnectionManager:
+    def __init__(self):
+        self.active: set[WebSocket] = set()
 
-@app.post("/echo")
-def echo(payload: EchoIn):
-    return {"you_said": payload.text}
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active.add(websocket)
 
-class SumIn(BaseModel):
-    numbers: List[float]
+    def disconnect(self, websocket: WebSocket):
+        self.active.discard(websocket)
 
-@app.post("/sum")
-def sum_numbers(payload: SumIn):
-    return {"sum": sum(payload.numbers), "count": len(payload.numbers)}
+    async def broadcast(self, message: dict):
+        # 送信失敗した接続は切断
+        dead = []
+        for ws in list(self.active):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+manager = ConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await manager.connect(ws)
+    try:
+        await manager.broadcast({"system": True, "text": "👋 someone joined"})
+        while True:
+            data = await ws.receive_json()
+            # data 例: {"name":"taro","text":"hello"}
+            msg = {
+                "system": False,
+                "name": (data.get("name") or "anonymous")[:32],
+                "text": (data.get("text") or "")[:2000],
+            }
+            await manager.broadcast(msg)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(ws)
+        await manager.broadcast({"system": True, "text": "👋 someone left"})

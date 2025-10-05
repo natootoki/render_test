@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WS Chat on Render</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f8; }
+    header { padding: 12px 16px; background: #111; color: #fff; }
+    main { max-width: 900px; margin: 0 auto; padding: 16px; }
+    #log { height: 55vh; overflow: auto; padding: 12px; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
+    .sys { color: #666; font-style: italic; }
+    .msg { margin: 6px 0; }
+    .name { font-weight: 600; margin-right: 6px; }
+    form { display: flex; gap: 8px; margin-top: 12px; }
+    input, button { padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+    input[name="name"] { width: 20ch; }
+    input[name="text"] { flex: 1; }
+    #status { font-size: 12px; color: #666; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <header>WebSocket Chat (FastAPI on Render)</header>
+  <main>
+    <div id="log" aria-live="polite"></div>
+
+    <form id="chat">
+      <input name="name" placeholder="名前 (任意)" />
+      <input name="text" placeholder="メッセージを入力…" autocomplete="off" required />
+      <button type="submit">送信</button>
+    </form>
+    <div id="status">connecting…</div>
+  </main>
+
+  <script>
+    const log = document.getElementById("log");
+    const form = document.getElementById("chat");
+    const nameInput = form.elements.namedItem("name");
+    const textInput = form.elements.namedItem("text");
+    const status = document.getElementById("status");
+
+    // 名前を保存・復元
+    nameInput.value = localStorage.getItem("wschat_name") || "";
+    nameInput.addEventListener("change", () => {
+      localStorage.setItem("wschat_name", nameInput.value);
+    });
+
+    let ws;
+    let reconnectTimer;
+
+    function appendLine(html, cls="") {
+      const div = document.createElement("div");
+      div.className = cls ? `msg ${cls}` : "msg";
+      div.innerHTML = html;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      status.textContent = "connecting…";
+
+      ws.addEventListener("open", () => {
+        status.textContent = "connected";
+        // keepalive: 30秒ごとに空メッセージ送信（Render でも安定）
+        if (!reconnectTimer) {
+          reconnectTimer = setInterval(() => {
+            try { ws.readyState === 1 && ws.send(JSON.stringify({ ping: Date.now() })); } catch {}
+          }, 30000);
+        }
+      });
+
+      ws.addEventListener("message", (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.system) {
+            appendLine(data.text, "sys");
+          } else {
+            const name = (data.name || "anonymous")
+              .replace(/[<>&"'`]/g, s => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;','`':'&#96;'}[s]));
+            const text = (data.text || "")
+              .replace(/[<>&]/g, s => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[s]));
+            appendLine(`<span class="name">${name}:</span>${text}`);
+          }
+        } catch { /* no-op */ }
+      });
+
+      ws.addEventListener("close", () => {
+        status.textContent = "disconnected — retrying in 2s…";
+        clearInterval(reconnectTimer); reconnectTimer = null;
+        setTimeout(connect, 2000);
+      });
+
+      ws.addEventListener("error", () => {
+        status.textContent = "error — retrying…";
+        try { ws.close(); } catch {}
+      });
+    }
+
+    connect();
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const payload = {
+        name: nameInput.value.trim() || "anonymous",
+        text: textInput.value.trim()
+      };
+      if (!payload.text) return;
+      try { ws.send(JSON.stringify(payload)); } catch {}
+      textInput.value = "";
+      textInput.focus();
+    });
+  </script>
+</body>
+</html>

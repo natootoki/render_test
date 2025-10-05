@@ -1,29 +1,26 @@
+# app.py（修正版）
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 app = FastAPI(title="Render WebSocket Chat")
-
-# 静的ファイル（index.html）をルートにマウント
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+STATIC_DIR = Path(__file__).parent / "static"
 
 @app.get("/healthz")
 def healthz():
     return JSONResponse({"status": "ok"})
 
+# ① WebSocket ルート（先に定義）
 class ConnectionManager:
     def __init__(self):
         self.active: set[WebSocket] = set()
-
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active.add(websocket)
-
     def disconnect(self, websocket: WebSocket):
         self.active.discard(websocket)
-
     async def broadcast(self, message: dict):
-        # 送信失敗した接続は切断
         dead = []
         for ws in list(self.active):
             try:
@@ -42,7 +39,6 @@ async def websocket_endpoint(ws: WebSocket):
         await manager.broadcast({"system": True, "text": "👋 someone joined"})
         while True:
             data = await ws.receive_json()
-            # data 例: {"name":"taro","text":"hello"}
             msg = {
                 "system": False,
                 "name": (data.get("name") or "anonymous")[:32],
@@ -54,3 +50,11 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         manager.disconnect(ws)
         await manager.broadcast({"system": True, "text": "👋 someone left"})
+
+# ② "/" は index.html を直接返す
+@app.get("/")
+def index():
+    return FileResponse(STATIC_DIR / "index.html")
+
+# ③ 静的ファイルは /static 配下にマウント
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
